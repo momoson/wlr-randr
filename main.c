@@ -369,6 +369,7 @@ static const struct wl_registry_listener registry_listener = {
 static const struct option long_options[] = {
 	{"help", no_argument, 0, 'h'},
 	{"dryrun", no_argument, 0, 0},
+	{"query", no_argument, 0, 0},
 	{"output", required_argument, 0, 0},
 	{"on", no_argument, 0, 0},
 	{"off", no_argument, 0, 0},
@@ -554,6 +555,7 @@ static const char usage[] =
 	"usage: wlr-randr [options…]\n"
 	"--help\n"
 	"--dryrun\n"
+	"--query\n"
 	"--output <name>\n"
 	"  --on\n"
 	"  --off\n"
@@ -561,6 +563,65 @@ static const char usage[] =
 	"  --pos <x>,<y>\n"
 	"  --transform normal|90|180|270|flipped|flipped-90|flipped-180|flipped-270\n"
 	"  --scale <factor>\n";
+
+void parse_args(int argc, char *argv[], struct randr_state *state, bool *changed,
+		bool *dry_run, bool *query, bool only_query) {
+	optind = 1; // reset getopt_long
+
+	struct randr_head *current_head = NULL;
+	while (1) {
+		int option_index = -1;
+		int c = getopt_long(argc, argv, "h", long_options, &option_index);
+		if (c < 0) {
+			break;
+		} else if (c == '?') {
+			exit(EXIT_FAILURE);
+		} else if (c == 'h') {
+			fprintf(stderr, "%s", usage);
+			exit(EXIT_SUCCESS);
+		}
+
+		const char *name = long_options[option_index].name;
+		const char *value = optarg;
+
+		if (only_query) {
+			if (strcmp(name, "query") == 0) {
+				*query = true;
+				return;
+			}
+			continue;
+		}
+
+		if (strcmp(name, "output") == 0) {
+			bool found = false;
+			wl_list_for_each(current_head, &state->heads, link) {
+				if (strcmp(current_head->name, value) == 0) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "unknown output %s\n", value);
+				exit(EXIT_FAILURE);
+			}
+		} else if (strcmp(name, "dryrun") == 0) {
+			*dry_run = true;
+		} else if (strcmp(name, "query") == 0) {
+			*query = true;
+		} else { // output sub-option
+			if (current_head == NULL) {
+				fprintf(stderr, "no --output specified before --%s\n", name);
+				exit(EXIT_FAILURE);
+			}
+
+			if (!parse_output_arg(current_head, name, value)) {
+				exit(EXIT_FAILURE);
+			}
+
+			*changed = true;
+		}
+	}
+}
 
 int main(int argc, char *argv[]) {
 	struct randr_state state = { .running = true };
@@ -590,54 +651,21 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	bool changed = false, dry_run = false;
-	struct randr_head *current_head = NULL;
-	while (1) {
-		int option_index = -1;
-		int c = getopt_long(argc, argv, "h", long_options, &option_index);
-		if (c < 0) {
-			break;
-		} else if (c == '?') {
-			return EXIT_FAILURE;
-		} else if (c == 'h') {
-			fprintf(stderr, "%s", usage);
-			return EXIT_SUCCESS;
-		}
+	bool changed = false, dry_run = false, query = false;
+	parse_args(argc, argv, &state, &changed, &dry_run, &query, true);
+	if (query) {
+		print_state(&state);
+	}
 
-		const char *name = long_options[option_index].name;
-		const char *value = optarg;
-		if (strcmp(name, "output") == 0) {
-			bool found = false;
-			wl_list_for_each(current_head, &state.heads, link) {
-				if (strcmp(current_head->name, value) == 0) {
-					found = true;
-					break;
-				}
-			}
-			if (!found) {
-				fprintf(stderr, "unknown output %s\n", value);
-				return EXIT_FAILURE;
-			}
-		} else if (strcmp(name, "dryrun") == 0) {
-			dry_run = true;
-		} else { // output sub-option
-			if (current_head == NULL) {
-				fprintf(stderr, "no --output specified before --%s\n", name);
-				return EXIT_FAILURE;
-			}
+	parse_args(argc, argv, &state, &changed, &dry_run, &query, false);
 
-			if (!parse_output_arg(current_head, name, value)) {
-				return EXIT_FAILURE;
-			}
-
-			changed = true;
-		}
+	if (!changed && !query) {
+		print_state(&state);
 	}
 
 	if (changed) {
+		state.running = true;
 		apply_state(&state, dry_run);
-	} else {
-		print_state(&state);
 	}
 
 	while (state.running && wl_display_dispatch(display) != -1) {
